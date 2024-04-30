@@ -1,0 +1,80 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+
+# Load pre-trained license plate detection model
+plate_model = cv2.dnn.readNet("yolov4-tiny-obj.cfg", "yolov4-tiny-obj_best.weights")
+plate_classes = ["license_plate"]
+plate_layer_names = plate_model.getLayerNames()
+plate_output_layers = [plate_layer_names[i[0] - 1] for i in plate_model.getUnconnectedOutLayers()]
+
+# Load pre-trained license plate recognition model
+recognition_model = load_model("license_plate_recognition_model.h5")
+
+def detect_license_plate(frame):
+    height, width, _ = frame.shape
+    blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+    plate_model.setInput(blob)
+    outputs = plate_model.forward(plate_output_layers)
+    
+    boxes = []
+    confidences = []
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            if confidence > 0.5 and class_id == 0:
+                center_x = int(detection[0] * width)
+                center_y = int(detection[1] * height)
+                w = int(detection[2] * width)
+                h = int(detection[3] * height)
+
+                x = int(center_x - w / 2)
+                y = int(center_y - h / 2)
+
+                boxes.append([x, y, w, h])
+                confidences.append(float(confidence))
+
+    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+    plate_boxes = []
+    for i in range(len(boxes)):
+        if i in indexes:
+            x, y, w, h = boxes[i]
+            plate_boxes.append(frame[y:y+h, x:x+w])
+    return plate_boxes
+
+def recognize_license_plate(plate_boxes):
+    recognized_plates = []
+    for plate_box in plate_boxes:
+        resized_plate = cv2.resize(plate_box, (128, 64))
+        resized_plate = resized_plate / 255.0
+        plate_text = recognition_model.predict(np.array([resized_plate]))
+        recognized_plates.append(plate_text)
+    return recognized_plates
+
+def main():
+    cap = cv2.VideoCapture(0)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        plate_boxes = detect_license_plate(frame)
+        recognized_plates = recognize_license_plate(plate_boxes)
+        
+        for plate_text, (x, y, w, h) in zip(recognized_plates, plate_boxes):
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.putText(frame, plate_text, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        cv2.imshow('ALPR', frame)
+        
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
